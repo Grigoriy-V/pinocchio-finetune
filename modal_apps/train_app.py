@@ -110,6 +110,30 @@ def fetch_base() -> None:
     print(f"base at {path}", flush=True)
 
 
+def mapping_arguments(messages: list[dict]) -> list[dict]:
+    """The same messages with every tool call's arguments as a mapping.
+
+    The samples keep arguments as JSON strings (flat Arrow schemas); Gemma's
+    template refuses a string: "arguments must be a JSON object (mapping)".
+    """
+    import json
+
+    out = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        if not calls:
+            out.append(message)
+            continue
+        fixed = []
+        for call in calls:
+            function = dict(call["function"])
+            if isinstance(function.get("arguments"), str):
+                function["arguments"] = json.loads(function["arguments"] or "{}")
+            fixed.append({**call, "function": function})
+        out.append({**message, "tool_calls": fixed})
+    return out
+
+
 def _render(tokenizer, sample: dict) -> tuple[list[int], int] | str:
     """Token ids of prompt+completion and the prompt's length, or why not.
 
@@ -119,11 +143,13 @@ def _render(tokenizer, sample: dict) -> tuple[list[int], int] | str:
     to an open one and the mask would be wrong.
     """
     tools = sample["tools"] or None
+    prompt = mapping_arguments(sample["prompt"])
+    completion = mapping_arguments(sample["completion"])
     prompt_ids = tokenizer.apply_chat_template(
-        sample["prompt"], tools=tools, add_generation_prompt=True, tokenize=True
+        prompt, tools=tools, add_generation_prompt=True, tokenize=True
     )
     full_ids = tokenizer.apply_chat_template(
-        sample["prompt"] + sample["completion"], tools=tools, tokenize=True
+        prompt + completion, tools=tools, tokenize=True
     )
     if hasattr(prompt_ids, "input_ids"):
         prompt_ids = prompt_ids["input_ids"]
