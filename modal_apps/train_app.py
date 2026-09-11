@@ -175,6 +175,94 @@ def split_render(prompt_text: str, full_text: str) -> tuple[str, str] | str:
     return prompt_text, target
 
 
+MODEL_TURN = "<|turn>model\n"
+TURN_END = "<turn|>"
+RESPONSE_OPEN = "<|tool_response>"
+RESPONSE_CLOSE = "<tool_response|>"
+
+
+def segments_of(full_text: str) -> list[tuple[str, bool]]:
+    """The full render of a run cut into (text, is_target) pieces.
+
+    A target is what the model generates: inside every model turn, the tool
+    calls with the `<|tool_response>` that ends each (the stop token), the
+    text after a response, and the turn's closing `<turn|>`. Context is the
+    rest: everything outside model turns, a tool response's body from after
+    its `<|tool_response>` through `<tool_response|>`, and the empty thought
+    channel that is inserted after every `<|turn>model\\n`, because that is
+    how the generation prompt puts the turn to the model with thinking off
+    and a stored turn is rendered without it.
+    """
+    out: list[tuple[str, bool]] = []
+    pos = 0
+    while True:
+        start = full_text.find(MODEL_TURN, pos)
+        if start < 0:
+            out.append((full_text[pos:], False))
+            break
+        head_end = start + len(MODEL_TURN)
+        out.append((full_text[pos:head_end] + EMPTY_THOUGHT, False))
+        end = full_text.find(TURN_END, head_end)
+        if end < 0:
+            end = len(full_text)
+            body = full_text[head_end:]
+            closing = ""
+        else:
+            body = full_text[head_end:end]
+            closing = TURN_END
+        cursor = 0
+        while True:
+            open_at = body.find(RESPONSE_OPEN, cursor)
+            if open_at < 0:
+                out.append((body[cursor:], True))
+                break
+            before = body[cursor:open_at]
+            # The opener is the model's stop token only right after a call;
+            # the second and later responses to parallel calls open with it
+            # too, and there it is the harness's, not the model's.
+            if before.endswith("<tool_call|>"):
+                out.append((before + RESPONSE_OPEN, True))
+            else:
+                out.append((before, True))
+                out.append((RESPONSE_OPEN, False))
+            close_at = body.find(RESPONSE_CLOSE, open_at)
+            if close_at < 0:
+                cursor = len(body)
+                break
+            close_end = close_at + len(RESPONSE_CLOSE)
+            out.append((body[open_at + len(RESPONSE_OPEN) : close_end], False))
+            cursor = close_end
+        out.append((closing, True))
+        pos = end + len(closing)
+    merged: list[tuple[str, bool]] = []
+    for text, target in out:
+        if not text:
+            continue
+        if merged and merged[-1][1] == target:
+            merged[-1] = (merged[-1][0] + text, target)
+        else:
+            merged.append((text, target))
+    return merged
+
+
+def _render_run(tokenizer, sample: dict) -> tuple[list[int], list[int]] | str:
+    """Token ids and a mask for a whole run: every assistant segment a target."""
+    tools = sample["tools"] or None
+    messages = mapping_arguments(sample["prompt"] + sample["completion"])
+    full_text = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False).rstrip("\n")
+    ids: list[int] = []
+    mask: list[int] = []
+    for text, target in segments_of(full_text):
+        piece = tokenizer(text, add_special_tokens=False)["input_ids"]
+        ids += piece
+        mask += [int(target)] * len(piece)
+    if len(ids) > MAX_TOKENS:
+        return f"{len(ids)} tokens over the ceiling"
+    if not any(mask):
+        return "empty completion"
+    return ids, mask
+
+
 def _completion_as_gemma(completion: list[dict]) -> list[dict]:
     """A call with text becomes the call alone: in Gemma's DSL the text of a
     tool-calling turn is rendered after the tool's response, so the text is
@@ -228,17 +316,21 @@ def tokenize(set: str = "v1") -> dict:
         for line in handle:
             sample = json.loads(line)
             try:
-                rendered = _render(tokenizer, sample)
+                if sample.get("mode") == "run":
+                    rendered = _render_run(tokenizer, sample)
+                else:
+                    rendered = _render(tokenizer, sample)
             except Exception as error:  # noqa: BLE001 - the reason is the output
                 rendered = f"{type(error).__name__}: {str(error)[:120]}"
             if isinstance(rendered, str):
                 dropped[rendered] += 1
                 continue
-            ids, cut = rendered
+            ids, second = rendered
+            mask = second if isinstance(second, list) else [0] * second + [1] * (len(ids) - second)
             rows.append(
                 {
                     "input_ids": ids,
-                    "completion_mask": [0] * cut + [1] * (len(ids) - cut),
+                    "completion_mask": mask,
                     "run_id": sample["run_id"],
                     "call_index": sample["call_index"],
                     "letter": sample["letter"],
@@ -266,8 +358,17 @@ def tokenize(set: str = "v1") -> dict:
             cut = row["completion_mask"].index(1)
             print("--- prompt tail, decoded ---", flush=True)
             print(repr(tokenizer.decode(row["input_ids"][max(0, cut - 60):cut])), flush=True)
-            print("--- target, decoded ---", flush=True)
-            print(repr(tokenizer.decode(row["input_ids"][cut:])), flush=True)
+            print("--- targets, decoded (context elided) ---", flush=True)
+            pieces, run = [], []
+            for token, target in zip(row["input_ids"][cut:], row["completion_mask"][cut:]):
+                if target:
+                    run.append(token)
+                elif run:
+                    pieces.append(tokenizer.decode(run))
+                    run = []
+            if run:
+                pieces.append(tokenizer.decode(run))
+            print(repr(" [...] ".join(pieces))[:2500], flush=True)
     return report
 
 
@@ -283,9 +384,12 @@ def tokenize(set: str = "v1") -> dict:
     memory=65536,
     timeout=6 * 60 * MINUTES,
 )
-def train(set: str = "v1", run: str = "v1-r16", max_steps: int = -1, epochs: float = 0) -> dict:
-    """QLoRA on one L40S. `--max-steps 5` is the smoke run; the real one
-    goes the epochs. Saves the adapter and a record of the run."""
+def train(
+    set: str = "v1", run: str = "v1-r16", max_steps: int = -1, epochs: float = 0, quant: str = "nf4"
+) -> dict:
+    """LoRA on one GPU. `--max-steps 5` is the smoke run; the real one goes
+    the epochs. `--quant nf4` (QLoRA, 12 GiB peak) or `--quant none`
+    (bf16 base, ~30 GB). Saves the adapter and a record of the run."""
     import json
     import time
 
@@ -299,14 +403,21 @@ def train(set: str = "v1", run: str = "v1-r16", max_steps: int = -1, epochs: flo
     dataset = load_from_disk(f"{_data_dir(set)}/tokenized")
     dataset = dataset.remove_columns([c for c in dataset.column_names if c not in ("input_ids", "completion_mask")])
     tokenizer = AutoTokenizer.from_pretrained(BASE_REPO)
-    model = AutoModelForImageTextToText.from_pretrained(
-        BASE_REPO,
-        quantization_config=BitsAndBytesConfig(
+    if quant not in ("nf4", "none"):
+        raise ValueError(f"quant must be nf4 or none, not {quant!r}")
+    quantization = (
+        BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.bfloat16,
-        ),
+        )
+        if quant == "nf4"
+        else None
+    )
+    model = AutoModelForImageTextToText.from_pretrained(
+        BASE_REPO,
+        quantization_config=quantization,
         dtype=torch.bfloat16,
         device_map={"": 0},
         attn_implementation="sdpa",
@@ -346,6 +457,7 @@ def train(set: str = "v1", run: str = "v1-r16", max_steps: int = -1, epochs: flo
         "train": config,
         "max_steps": max_steps,
         "max_tokens": MAX_TOKENS,
+        "quant": quant,
         "gpu": GPU,
         "trainable_parameters": trainable,
         "global_steps": result.global_step,

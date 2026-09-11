@@ -99,6 +99,31 @@ def test_media_call_is_dropped_not_reconstructed(tmp_path):
     assert stats.samples == 1 and stats.samples_with_media == 1
 
 
+def test_per_run_is_the_last_call_with_its_completion(tmp_path):
+    calls = [
+        _call(1, [SYSTEM, USER], {"tool_calls": [{"id": "c1", "name": "run_command",
+                                                  "arguments": {"command": "python total.py"}}]}),
+        _call(2, [SYSTEM, USER, CALL, RESULT], {"text": "It prints 60."}),
+    ]
+    export = _export(tmp_path, [_entry("r")], [_run("r", calls)])
+    stats = convert(export, tmp_path / "out", Filter(), per_run=True)
+    lines = [json.loads(l) for l in (tmp_path / "out" / "train.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert stats.samples == 1 and len(lines) == 1
+    sample = lines[0]
+    assert sample["mode"] == "run" and sample["call_index"] == 2
+    assert [m["role"] for m in sample["prompt"]] == ["system", "user", "assistant", "tool"]
+    assert sample["completion"] == [{"role": "assistant", "content": "It prints 60."}]
+    assert stats.prompt_tokens == 100 and stats.completion_tokens == 20
+
+
+def test_per_run_drops_a_run_with_text_beside_a_call(tmp_path):
+    talky = {"role": "assistant", "content": [{"kind": "text", "text": "Running it."}],
+             "tool_calls": [{"id": "c1", "name": "run_command", "arguments": {"command": "x"}}]}
+    calls = [_call(2, [SYSTEM, USER, talky, RESULT], {"text": "60"})]
+    stats = convert(_export(tmp_path, [_entry("r")], [_run("r", calls)]), tmp_path / "out", Filter(), per_run=True)
+    assert stats.samples == 0 and stats.dropped_runs["text with a call"] == 1
+
+
 def test_helpers():
     assert text_of(None) == ""
     assert text_of("plain") == "plain"

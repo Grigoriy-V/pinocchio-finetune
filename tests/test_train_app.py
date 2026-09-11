@@ -1,4 +1,49 @@
-from modal_apps.train_app import EMPTY_THOUGHT, _completion_as_gemma, mapping_arguments, split_render
+from modal_apps.train_app import (
+    EMPTY_THOUGHT,
+    _completion_as_gemma,
+    mapping_arguments,
+    segments_of,
+    split_render,
+)
+
+
+def test_segments_of_a_run_mark_calls_stop_tokens_text_and_turn_end():
+    call = '<|tool_call>call:f{a:<|"|>1<|"|>}<tool_call|>'
+    response = '<|tool_response>response:f{value:<|"|>60<|"|>}<tool_response|>'
+    full = ("<bos><|turn>system\nS<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n"
+            + call + response + "It prints 60.<turn|>")
+    assert segments_of(full) == [
+        ("<bos><|turn>system\nS<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n" + EMPTY_THOUGHT, False),
+        (call + "<|tool_response>", True),
+        ('response:f{value:<|"|>60<|"|>}<tool_response|>', False),
+        ("It prints 60.<turn|>", True),
+    ]
+    assert "".join(t for t, _ in segments_of(full)).replace(EMPTY_THOUGHT, "") == full
+
+
+def test_segments_of_parallel_calls_mark_only_the_first_opener():
+    calls = "<|tool_call>call:f{}<tool_call|><|tool_call>call:g{}<tool_call|>"
+    r1 = "<|tool_response>response:f{value:<|\"|>1<|\"|>}<tool_response|>"
+    r2 = "<|tool_response>response:g{value:<|\"|>2<|\"|>}<tool_response|>"
+    full = "<|turn>model\n" + calls + r1 + r2 + "3<turn|>"
+    assert segments_of(full) == [
+        ("<|turn>model\n" + EMPTY_THOUGHT, False),
+        (calls + "<|tool_response>", True),
+        (r1[len("<|tool_response>"):] + r2, False),
+        ("3<turn|>", True),
+    ]
+
+
+def test_segments_of_two_model_turns_and_a_trailing_call():
+    full = ("<|turn>user\na<turn|>\n<|turn>model\nx<turn|>\n<|turn>user\nb<turn|>\n<|turn>model\n"
+            "<|tool_call>call:g{}<tool_call|><|tool_response>")
+    segments = segments_of(full)
+    assert segments == [
+        ("<|turn>user\na<turn|>\n<|turn>model\n" + EMPTY_THOUGHT, False),
+        ("x<turn|>", True),
+        ("\n<|turn>user\nb<turn|>\n<|turn>model\n" + EMPTY_THOUGHT, False),
+        ("<|tool_call>call:g{}<tool_call|><|tool_response>", True),
+    ]
 
 
 def test_arguments_become_mappings_and_nothing_else_changes():

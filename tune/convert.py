@@ -171,12 +171,52 @@ def samples_of(run: dict[str, Any], letter: str, stats: Stats) -> Iterator[dict[
         }
 
 
+def run_sample_of(run: dict[str, Any], letter: str, stats: Stats) -> dict[str, Any] | None:
+    """One sample for the whole run: the last call's messages plus its
+    completion, so every assistant message of the run is in one sequence and
+    the prefix is encoded once. The tokenizer masks every assistant segment.
+
+    A run in which an assistant message carried text together with a tool
+    call is dropped: Gemma's template renders that text after the tool's
+    response and closes the turn, so the next message would train as a
+    continuation the model never sees at inference (the per-call path drops
+    the same samples, for the same reason).
+    """
+    calls = sorted(run.get("calls") or [], key=lambda c: c["call_index"])
+    if not calls:
+        return None
+    last = calls[-1]
+    prompt = messages_of(last["messages"])
+    if prompt is None:
+        stats.samples_with_media += 1
+        return None
+    completion = completion_of(last["completion"])
+    if any(m.get("tool_calls") and m.get("content") for m in prompt + [completion]):
+        stats.dropped_runs["text with a call"] += 1
+        return None
+    for call in calls:
+        usage = (call.get("completion") or {}).get("usage") or {}
+        stats.completion_tokens += usage.get("output_tokens") or 0
+    stats.prompt_tokens += ((last.get("completion") or {}).get("usage") or {}).get("input_tokens") or 0
+    stats.samples += 1
+    stats.by_letter[letter] += 1
+    return {
+        "run_id": run["run_id"],
+        "call_index": last["call_index"],
+        "letter": letter,
+        "mode": "run",
+        "prompt": prompt,
+        "completion": [completion],
+        "tools": last.get("tools") or [],
+    }
+
+
 def read_index(export: Path) -> list[dict[str, Any]]:
     with (export / "index.jsonl").open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def convert(export: Path, out: Path, rule: Filter) -> Stats:
+def convert(export: Path, out: Path, rule: Filter, per_run: bool = False) -> Stats:
     stats = Stats()
     out.mkdir(parents=True, exist_ok=True)
     with (out / "train.jsonl").open("w", encoding="utf-8") as sink:
@@ -189,7 +229,12 @@ def convert(export: Path, out: Path, rule: Filter) -> Stats:
             stats.runs_kept += 1
             run = json.loads((export / "runs" / f"{entry['run_id']}.json").read_text(encoding="utf-8"))
             letter = (entry.get("scenario") or {}).get("letter") or "?"
-            for sample in samples_of(run, letter, stats):
+            if per_run:
+                sample = run_sample_of(run, letter, stats)
+                samples = [sample] if sample else []
+            else:
+                samples = samples_of(run, letter, stats)
+            for sample in samples:
                 sink.write(json.dumps(sample, ensure_ascii=False) + "\n")
     (out / "stats.json").write_text(json.dumps(stats.as_dict(), indent=2), encoding="utf-8")
     return stats
@@ -207,9 +252,14 @@ def main(argv: list[str] | None = None) -> int:
         help="a check name that no longer counts (dropped after the run)",
     )
     parser.add_argument("--include-held-out", action="store_true")
+    parser.add_argument(
+        "--per-run",
+        action="store_true",
+        help="one sample per run (its last call, every assistant segment a target) instead of one per call",
+    )
     args = parser.parse_args(argv)
     rule = Filter(args.teacher, tuple(args.ignore_check), args.include_held_out)
-    stats = convert(args.export, args.out, rule)
+    stats = convert(args.export, args.out, rule, per_run=args.per_run)
     print(json.dumps(stats.as_dict(), indent=2))
     return 0
 
