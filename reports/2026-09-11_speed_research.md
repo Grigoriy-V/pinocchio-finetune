@@ -66,8 +66,14 @@ Combined B + C on an H100 is the plain-stack option: no dequant, no
 recompute, the bigger card's bandwidth for the attention kernels —
 1.5–3× over today, at $3.95/h. A alone gives ~3× on any card and also
 shrinks the epoch's teacher-token count without touching a single
-target token. A + B + C on an H100 could put the run under 20 minutes;
-that is arithmetic, not a measurement.
+target token.
+
+C is the one that does not fit, and for the same reason the run is slow:
+without a flash kernel every layer keeps its 8 × 6.4k × 6.4k attention
+scores, 1.3–2.6 GB a layer on top of ~1.4 GB of linear-layer activations,
+30 layers → 75–120 GB for the longest sample. Not on an 80 GB card at our
+lengths; C needs F first. A + B on an A100-80 (~30 GB peak, $2.50/h) is
+the realistic v2: 20–40 minutes a run by arithmetic, to be measured.
 
 ## What to do, in order (v2, after the loop closes)
 
