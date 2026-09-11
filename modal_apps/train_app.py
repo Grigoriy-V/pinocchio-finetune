@@ -467,7 +467,10 @@ def train(
         "max_steps": max_steps,
         "max_tokens": MAX_TOKENS,
         "quant": quant,
-        "gpu": GPU,
+        # The device itself, not `GPU`: that variable is read from the
+        # environment, which the container does not have, so the v1 record
+        # said "L40S" for a run that was on an A100-40.
+        "gpu": torch.cuda.get_device_name(0),
         "trainable_parameters": trainable,
         "global_steps": result.global_step,
         "train_loss": result.training_loss,
