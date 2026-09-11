@@ -69,7 +69,13 @@ TRAIN = {
     "bf16": True,
     "gradient_checkpointing": True,
     "logging_steps": 5,
-    "save_strategy": "no",
+    # A checkpoint every 10 steps on the Volume, the last two kept: a run
+    # can then be stopped at any point and its latest adapter taken. The v1
+    # run had `save_strategy="no"` and could not be stopped early without
+    # losing it all (the human asked, 2026-09-12).
+    "save_strategy": "steps",
+    "save_steps": 10,
+    "save_total_limit": 2,
     "report_to": "none",
     "seed": 3407,
 }
