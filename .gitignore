@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+# Trajectories and samples come from the harness's export and are not
+# republished here; weights live on the Modal Volume.
+/data/
+*.safetensors
+*.gguf
+*.bin

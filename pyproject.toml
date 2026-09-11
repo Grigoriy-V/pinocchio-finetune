@@ -1,0 +1,18 @@
+[project]
+name = "pinocchio-finetune"
+version = "0.1.0"
+description = "Fine-tuning Gemma 4 12B on trajectories from the Pinocchio harness"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+# The Modal client only; torch, transformers, TRL and vLLM live in the
+# Modal images (`modal_apps/`), never on this machine.
+modal = ["modal>=1.5"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["tune"]
