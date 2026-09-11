@@ -110,7 +110,7 @@ def _run_dir(run: str) -> str:
     return f"{VOL}/runs/{run}"
 
 
-@app.function(image=image, volumes={VOL: volume}, secrets=[hf_secret], cpu=8, timeout=60 * MINUTES)
+@app.function(image=image, volumes={VOL: volume}, secrets=[hf_secret], cpu=2, timeout=60 * MINUTES)
 def fetch_base() -> None:
     """Download the base weights on CPU, once."""
     from huggingface_hub import snapshot_download
@@ -301,7 +301,7 @@ def _render(tokenizer, sample: dict) -> tuple[list[int], int] | str:
     return prompt_ids + target_ids, len(prompt_ids)
 
 
-@app.function(image=image, volumes={VOL: volume}, secrets=[hf_secret], cpu=4, memory=16384, timeout=60 * MINUTES)
+@app.function(image=image, volumes={VOL: volume}, secrets=[hf_secret], cpu=2, memory=8192, timeout=60 * MINUTES)
 def tokenize(set: str = "v1") -> dict:
     """Render every sample through Gemma's chat template and mask the prompt.
 
@@ -386,8 +386,11 @@ def tokenize(set: str = "v1") -> dict:
     # samples on an L40S (~750 tokens/s): 196 steps is ~3 h there. The GPU
     # is chosen per run, `TUNE_GPU=H100 modal run ...`, and recorded.
     gpu=GPU,
-    cpu=8,
-    memory=65536,
+    # CPU and memory are billed beside the GPU ($0.047/core/h, $0.008/GiB/h):
+    # the v1 run's 8 cores and 64 GiB added $0.88/h, +40 % on an A100-40,
+    # for data that fits in a few hundred MB. Two cores and 16 GiB do.
+    cpu=2,
+    memory=16384,
     timeout=6 * 60 * MINUTES,
 )
 def train(
