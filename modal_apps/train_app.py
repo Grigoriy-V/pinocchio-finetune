@@ -135,7 +135,6 @@ def mapping_arguments(messages: list[dict]) -> list[dict]:
 
 
 EMPTY_THOUGHT = "<|channel>thought\n<channel|>"
-DANGLING_RESPONSE = "<|tool_response>"
 
 
 def split_render(prompt_text: str, full_text: str) -> tuple[str, str] | str:
@@ -150,10 +149,11 @@ def split_render(prompt_text: str, full_text: str) -> tuple[str, str] | str:
       channel that a stored assistant turn never carries; the target
       therefore begins after `<|turn>model\n` in the full render and is
       appended to the prompt as rendered, empty channel included;
-    - a trailing tool call is followed by an opened, empty
-      `<|tool_response>`, which the model never generates (it stops at
-      `<tool_call|>`), so it is cut; a text turn keeps its `<turn|>` and
-      loses the newline after it.
+    - a trailing tool call is followed by an opened `<|tool_response>`,
+      and that is the stop token the model emits after a call (the
+      generation config's stops are `<eos>`, `<turn|>`, `<|tool_response>`),
+      so the target keeps it; a text turn keeps its `<turn|>` and loses
+      the newline after it.
 
     When the full render does not continue the prompt — the template closed
     the model turn after a text-with-call message and glues the next
@@ -165,10 +165,7 @@ def split_render(prompt_text: str, full_text: str) -> tuple[str, str] | str:
         head = head[: -len(EMPTY_THOUGHT)]
     if not full_text.startswith(head):
         return "the template closed the turn before the completion"
-    target = full_text[len(head):]
-    if target.endswith(DANGLING_RESPONSE):
-        target = target[: -len(DANGLING_RESPONSE)]
-    target = target.rstrip("\n")
+    target = full_text[len(head):].rstrip("\n")
     if not target:
         return "empty completion"
     return prompt_text, target

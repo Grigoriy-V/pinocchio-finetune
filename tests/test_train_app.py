@@ -20,7 +20,8 @@ def test_split_first_call_with_empty_thought_channel():
     prompt = "<|turn>user\nhi<turn|>\n<|turn>model\n" + EMPTY_THOUGHT
     call = '<|tool_call>call:f{a:<|"|>1<|"|>}<tool_call|>'
     full = "<|turn>user\nhi<turn|>\n<|turn>model\n" + call + "<|tool_response>"
-    assert split_render(prompt, full) == (prompt, call)
+    # `<|tool_response>` stays: it is the stop token the model emits after a call.
+    assert split_render(prompt, full) == (prompt, call + "<|tool_response>")
 
 
 def test_split_text_after_tool_response_keeps_turn_end_drops_newline():
