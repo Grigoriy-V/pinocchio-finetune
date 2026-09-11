@@ -30,6 +30,8 @@ the token.
 
 from __future__ import annotations
 
+import os
+
 import modal
 
 APP_NAME = "pinocchio-tune"
@@ -71,6 +73,8 @@ TRAIN = {
     "report_to": "none",
     "seed": 3407,
 }
+
+GPU = os.environ.get("TUNE_GPU", "L40S")
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME, create_if_missing=True)
@@ -271,7 +275,10 @@ def tokenize(set: str = "v1") -> dict:
     image=image,
     volumes={VOL: volume},
     secrets=[hf_secret],
-    gpu="L40S",
+    # The smoke run measured 12.2 GiB peak at r=16 and 55 s per step of 8
+    # samples on an L40S (~750 tokens/s): 196 steps is ~3 h there. The GPU
+    # is chosen per run, `TUNE_GPU=H100 modal run ...`, and recorded.
+    gpu=GPU,
     cpu=8,
     memory=65536,
     timeout=6 * 60 * MINUTES,
@@ -339,7 +346,7 @@ def train(set: str = "v1", run: str = "v1-r16", max_steps: int = -1, epochs: flo
         "train": config,
         "max_steps": max_steps,
         "max_tokens": MAX_TOKENS,
-        "gpu": "L40S",
+        "gpu": GPU,
         "trainable_parameters": trainable,
         "global_steps": result.global_step,
         "train_loss": result.training_loss,
