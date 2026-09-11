@@ -134,33 +134,76 @@ def mapping_arguments(messages: list[dict]) -> list[dict]:
     return out
 
 
-def _render(tokenizer, sample: dict) -> tuple[list[int], int] | str:
-    """Token ids of prompt+completion and the prompt's length, or why not.
+EMPTY_THOUGHT = "<|channel>thought\n<channel|>"
+DANGLING_RESPONSE = "<|tool_response>"
 
-    The prompt is rendered with the generation prompt, the whole with the
-    completion; the first must be a prefix of the second, otherwise the
-    template does something to a finished assistant turn that it does not do
-    to an open one and the mask would be wrong.
+
+def split_render(prompt_text: str, full_text: str) -> tuple[str, str] | str:
+    """The prompt as the model sees it at inference, and the target after it.
+
+    `prompt_text` is the template's render with the generation prompt —
+    exactly what vLLM builds before the model generates. `full_text` is the
+    render of prompt plus the stored assistant message. Gemma's template
+    makes them differ in two ways found on the v1 set (2026-09-11):
+
+    - with thinking off, the generation prompt ends in an empty thought
+      channel that a stored assistant turn never carries; the target
+      therefore begins after `<|turn>model\n` in the full render and is
+      appended to the prompt as rendered, empty channel included;
+    - a trailing tool call is followed by an opened, empty
+      `<|tool_response>`, which the model never generates (it stops at
+      `<tool_call|>`), so it is cut; a text turn keeps its `<turn|>` and
+      loses the newline after it.
+
+    When the full render does not continue the prompt — the template closed
+    the model turn after a text-with-call message and glues the next
+    message into the closed turn — there is no target consistent with
+    inference, and the sample is dropped with the reason.
     """
+    head = prompt_text
+    if head.endswith(EMPTY_THOUGHT):
+        head = head[: -len(EMPTY_THOUGHT)]
+    if not full_text.startswith(head):
+        return "the template closed the turn before the completion"
+    target = full_text[len(head):]
+    if target.endswith(DANGLING_RESPONSE):
+        target = target[: -len(DANGLING_RESPONSE)]
+    target = target.rstrip("\n")
+    if not target:
+        return "empty completion"
+    return prompt_text, target
+
+
+def _completion_as_gemma(completion: list[dict]) -> list[dict]:
+    """A call with text becomes the call alone: in Gemma's DSL the text of a
+    tool-calling turn is rendered after the tool's response, so the text is
+    not something the model emits before the call."""
+    out = []
+    for message in completion:
+        if message.get("tool_calls") and message.get("content"):
+            out.append({**message, "content": ""})
+        else:
+            out.append(message)
+    return out
+
+
+def _render(tokenizer, sample: dict) -> tuple[list[int], int] | str:
+    """Token ids of prompt+target and the prompt's length in tokens, or why not."""
     tools = sample["tools"] or None
     prompt = mapping_arguments(sample["prompt"])
-    completion = mapping_arguments(sample["completion"])
-    prompt_ids = tokenizer.apply_chat_template(
-        prompt, tools=tools, add_generation_prompt=True, tokenize=True
+    completion = mapping_arguments(_completion_as_gemma(sample["completion"]))
+    prompt_text = tokenizer.apply_chat_template(
+        prompt, tools=tools, add_generation_prompt=True, tokenize=False
     )
-    full_ids = tokenizer.apply_chat_template(
-        prompt + completion, tools=tools, tokenize=True
-    )
-    if hasattr(prompt_ids, "input_ids"):
-        prompt_ids = prompt_ids["input_ids"]
-        full_ids = full_ids["input_ids"]
-    if full_ids[: len(prompt_ids)] != list(prompt_ids):
-        return "prompt is not a prefix of prompt+completion"
-    if len(full_ids) > MAX_TOKENS:
-        return f"{len(full_ids)} tokens over the ceiling"
-    if len(full_ids) == len(prompt_ids):
-        return "empty completion"
-    return list(full_ids), len(prompt_ids)
+    full_text = tokenizer.apply_chat_template(prompt + completion, tools=tools, tokenize=False)
+    split = split_render(prompt_text, full_text)
+    if isinstance(split, str):
+        return split
+    prompt_ids = tokenizer(split[0], add_special_tokens=False)["input_ids"]
+    target_ids = tokenizer(split[1], add_special_tokens=False)["input_ids"]
+    if len(prompt_ids) + len(target_ids) > MAX_TOKENS:
+        return f"{len(prompt_ids) + len(target_ids)} tokens over the ceiling"
+    return prompt_ids + target_ids, len(prompt_ids)
 
 
 @app.function(image=image, volumes={VOL: volume}, secrets=[hf_secret], cpu=4, memory=16384, timeout=60 * MINUTES)
@@ -217,8 +260,13 @@ def tokenize(set: str = "v1") -> dict:
     volume.commit()
     print(json.dumps(report, indent=2), flush=True)
     if rows:
-        print("--- first sample, decoded ---", flush=True)
-        print(tokenizer.decode(rows[0]["input_ids"])[:3000], flush=True)
+        print("stop tokens of generation_config [1, 106, 50]:", tokenizer.convert_ids_to_tokens([1, 106, 50]), flush=True)
+        for row in rows[:2]:
+            cut = row["completion_mask"].index(1)
+            print("--- prompt tail, decoded ---", flush=True)
+            print(repr(tokenizer.decode(row["input_ids"][max(0, cut - 60):cut])), flush=True)
+            print("--- target, decoded ---", flush=True)
+            print(repr(tokenizer.decode(row["input_ids"][cut:])), flush=True)
     return report
 
 
