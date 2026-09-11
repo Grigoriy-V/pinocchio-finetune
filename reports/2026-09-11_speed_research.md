@@ -75,6 +75,14 @@ scores, 1.3–2.6 GB a layer on top of ~1.4 GB of linear-layer activations,
 lengths; C needs F first. A + B on an A100-80 (~30 GB peak, $2.50/h) is
 the realistic v2: 20–40 minutes a run by arithmetic, to be measured.
 
+## Measured the same evening (`2026-09-11_smoke_v2.md`)
+
+A + B on an A100-40, 5 steps: 53.7 s/step at the same ~42k tokens per
+step — **B gives nothing**, dequantisation is not the ceiling; **A gives
+its full 3.4×** by having fewer steps; peak 28.3 GiB. Two epochs of the
+run-per-sample set: 58 steps, ~52 min, ~$1.8. The remaining suspect is
+the attention path (lever F).
+
 ## What to do, in order (v2, after the loop closes)
 
 1. Two 5-step smokes on an H100, ~$0.50 each: today's recipe, and
