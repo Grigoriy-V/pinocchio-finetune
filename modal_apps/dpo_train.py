@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> None:
     import torch
     import torch.distributed as dist
     from datasets import load_from_disk
-    from peft import LoraConfig
+    from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForImageTextToText, AutoTokenizer
     from trl import DPOConfig
 
@@ -180,6 +180,12 @@ def main(argv: list[str] | None = None) -> None:
         dataset = dataset.rename_column(old, new)
     tokenizer = AutoTokenizer.from_pretrained(args.base)
     model = AutoModelForImageTextToText.from_pretrained(args.base, dtype=torch.bfloat16, attn_implementation="sdpa")
+    # The adapter in the base's dtype. PEFT's default upcasts LoRA to fp32,
+    # and FSDP with `use_orig_params` then holds bf16 and fp32 originals in
+    # one flat parameter: the fifth smoke died assigning a bf16 gradient to
+    # an fp32 leaf (2026-09-12). TRL does the same under ZeRO-3 for the same
+    # reason; the fp32 upcast is a QLoRA concern, and the base is not quantized.
+    model = get_peft_model(model, LoraConfig(**json.loads(args.lora)), autocast_adapter_dtype=False)
 
     total = steps_of(len(dataset), args.epochs, world, 1, args.accumulation) if args.max_steps < 0 else args.max_steps
     every = save_every(total)
@@ -224,7 +230,6 @@ def main(argv: list[str] | None = None) -> None:
         args=config,
         train_dataset=dataset,
         processing_class=tokenizer,
-        peft_config=LoraConfig(**json.loads(args.lora)),
     )
     trainable = sum(p.numel() for p in trainer.model.parameters() if p.requires_grad)
     if rank == 0:
