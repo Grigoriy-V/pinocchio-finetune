@@ -158,11 +158,15 @@ def main(argv: list[str] | None = None) -> None:
         gradient_accumulation_steps=args.accumulation,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
+        warmup_steps=max(1, round(total * 0.1)),
         beta=args.beta,
         max_length=args.max_length,
         precompute_ref_log_probs=False,
         bf16=True,
+        # TRL turns the model's own gradient checkpointing on by default;
+        # under FSDP the checkpointing is FSDP's (`activation_checkpointing`
+        # below) and transformers refuses both at once.
+        gradient_checkpointing=False,
         logging_steps=1,
         save_strategy="steps",
         save_steps=every,
