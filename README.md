@@ -174,6 +174,10 @@ fp32 under FSDP). The smoke took seven starts, each on one thing
 Run `dpo-v1` (2026-09-12): 12 steps, mean loss 0.202, margins 0.8–3.5
 from the fourth step on, 19.6 GiB peak, ~16 min of two A10s (~$1 with
 a cancelled first half; `--resume` from a checkpoint is exact).
+Measured blind beside the base on D V X (2026-09-12): **dpo 9.37, base
+9.47, GLM 9.70** of 10; checks 55/57 against 57/57. The loop is still
+there — D4 is the same six-fold repeat — and the model now answers in
+words after the guard instead of nothing (`reports/2026-09-12_dpo_measurement.md`).
 `--max-steps 2` is the smoke; `TUNE_GPU=A10:4` the optional second
 point of the scaling table.
 
