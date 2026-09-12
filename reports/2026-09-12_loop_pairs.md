@@ -104,9 +104,38 @@ asked whether the state is a dead end and which move leaves it. A pair
 the judges do not prefer `chosen` on is dropped. Proposed as the step
 between `teach` and training; a draft until approved.
 
+## The judges (2026-09-12, later still)
+
+Approved by the human ("давай"). `tune/judge_pairs.py pack` (seed 7): the
+23 pairs as items, each the state without the system prompt and the two
+moves as A and B in a drawn order, no model names; the key apart. Three
+Sonnet subagents, each told to read the pack and nothing else, one JSON
+line per item. `unblind` keeps a pair when a majority preferred the
+teacher's move and no judge scored the state 0.
+
+| | |
+|---|---|
+| items | 23 |
+| kept | **16** |
+| dropped: judges called both moves the same | 7 |
+| votes for the teacher / same / for the student | 47 / 22 / 0 |
+| `dead_end` = 2 | 69 of 69 |
+| unanimous items | 22 of 23 |
+
+The seven dropped are exactly the "different probe of the same thing"
+kind read out above (V6 `cat` vs `find` a third time, V1 `ls -la` vs
+`find`, the guard-refused call vs its restatement): the judges named them
+without seeing who was who. No item went to the student. Every state was
+judged a dead end, so the extractor's rule of evidence held on every pair.
+
+The set for training: `data/pairs/v1/dpo_judged.jsonl`, 16 pairs — V1 9
+(int4 5, tuned 4), X2 3, V6 2, D1 D2 N1 one each; `chosen` is a text
+answer in three of them, a read of the script in five, a corrected
+command in the rest. Cost of the judging: three Sonnet subagents of ~100k
+tokens each.
+
 ## Next, in order (each on the human's word)
 
-1. Blind judges over the 23 pairs (proposed above).
-2. The DPO training app on `gpu="A10:2"` with FSDP, checkpoints every 20%
+1. The DPO training app on `gpu="A10:2"` with FSDP, checkpoints every 20%
    of the steps; one smoke of a few steps.
-3. The full run, the measurement through the harness, `base` beside it.
+2. The full run, the measurement through the harness, `base` beside it.

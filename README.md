@@ -119,7 +119,11 @@ tuned or not) is read call by call; where it re-issued a call it had
 already made in the turn and nothing had changed — the harness's repeat
 guard refused it, or it ran again and returned the same text — the state
 it saw is the prompt and the repeat is `rejected`. At most ten pairs a
-run. `tune/teach.py` then asks the teacher the same prompt with the same
+run. `tune/teach. Taught: 23 kept (GLM repeated the student's call in 11). Judged
+blind by three Sonnet judges (`tune/judge_pairs.py`, the same pack →
+judges → unblind shape as the harness's): **16 pairs** kept, the 7 where
+the judges called both moves the same dropped, no vote for the student.
+`data/pairs/v1/dpo_judged.jsonl` is the training set.py` then asks the teacher the same prompt with the same
 tools (paid, a gate; asked once, cached in `taught.jsonl`) and its move is
 `chosen`; a pair where the teacher repeats too, or says nothing, is
 dropped. Output `dpo.jsonl` in TRL's conversational preference shape.
