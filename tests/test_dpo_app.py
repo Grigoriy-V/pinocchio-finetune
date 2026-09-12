@@ -45,6 +45,7 @@ def test_render_pair_shares_the_prompt_and_splits_the_two_completions():
 
 def test_steps_and_checkpoints_every_fifth():
     assert steps_of(16, 3, gpus=2, per_device=1, accumulation=2) == 12
+    assert steps_of(13, 3, gpus=2, per_device=1, accumulation=2) == 12
     assert steps_of(16, 1, gpus=2, per_device=1, accumulation=2) == 4
     assert save_every(12) == 2 and save_every(4) == 1 and save_every(58) == 12
 

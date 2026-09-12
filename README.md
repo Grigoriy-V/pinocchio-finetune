@@ -171,6 +171,9 @@ accumulation 2 → 12 steps on 16 pairs, a checkpoint every 20 % of them.
 Pure bf16, no mixed precision (accelerate would upcast the adapter to
 fp32 under FSDP). The smoke took seven starts, each on one thing
 (`reports/2026-09-12_dpo_smoke.md`); it ran at 18.8 GiB peak.
+Run `dpo-v1` (2026-09-12): 12 steps, mean loss 0.202, margins 0.8–3.5
+from the fourth step on, 19.6 GiB peak, ~16 min of two A10s (~$1 with
+a cancelled first half; `--resume` from a checkpoint is exact).
 `--max-steps 2` is the smoke; `TUNE_GPU=A10:4` the optional second
 point of the scaling table.
 

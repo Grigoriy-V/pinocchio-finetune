@@ -37,7 +37,9 @@ import time
 def steps_of(samples: int, epochs: float, gpus: int, per_device: int, accumulation: int) -> int:
     """Optimizer steps the run will take: samples per step is the world's batch."""
     per_step = gpus * per_device * accumulation
-    return math.ceil(samples * epochs / per_step)
+    # The trainer rounds up per epoch: 13 pairs at 4 per step are 4 steps an
+    # epoch, 12 in three, not ceil(39 / 4) = 10 (the dpo-v1 run, 2026-09-12).
+    return math.ceil(samples / per_step) * math.ceil(epochs)
 
 
 def save_every(total_steps: int, fraction: float = 0.2) -> int:
