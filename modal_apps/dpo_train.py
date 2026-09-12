@@ -11,6 +11,15 @@ half of it per card leaves room for the activations.
 The dataset is pre-tokenized (`dpo_app.py::tokenize_pairs`) through the
 same rendering the SFT path used, so the prompt is what vLLM builds at
 inference and the completions end in the model's own stop tokens.
+
+The loss is this file's, not the trainer's. TRL's `_compute_loss` asks the
+model for the logits of every position and Gemma's vocabulary is 262k: on
+a 7k-token pair that is ~7 GB per sequence in bf16, three times over
+(policy, its gradient, the reference), beside a 12 GB shard of the
+weights — not on a 24 GB card. Gemma's forward takes `logits_to_keep`, a
+tensor of positions, so `LoopDPOTrainer` asks for the few dozen positions
+that predict a completion token and computes the sigmoid DPO loss on
+those; the reference pass is the same forward with the adapter disabled.
 """
 
 from __future__ import annotations
@@ -33,6 +42,77 @@ def save_every(total_steps: int, fraction: float = 0.2) -> int:
     return max(1, round(total_steps * fraction))
 
 
+def positions_to_keep(completion_mask):
+    """The positions whose logits predict a completion token, over the whole
+    batch: position p predicts token p+1, so p is kept when any row's mask
+    is 1 at p+1. Sorted, unique, as a tensor for `logits_to_keep`."""
+    import torch
+
+    return torch.unique(torch.nonzero(completion_mask[:, 1:])[:, 1])
+
+
+def sequence_logps(logits, input_ids, completion_mask, keep):
+    """Sum of the log-probabilities of the completion tokens per row, from
+    logits computed at the kept positions only."""
+    from trl.trainer.utils import selective_log_softmax
+
+    labels = input_ids[:, keep + 1]
+    mask = completion_mask[:, keep + 1]
+    per_token = selective_log_softmax(logits, labels)
+    return (per_token * mask).sum(dim=1)
+
+
+def dpo_loss(chosen, rejected, ref_chosen, ref_rejected, beta: float):
+    """The sigmoid DPO loss and its reward margins, mean over the batch."""
+    import torch.nn.functional as F
+
+    margins = beta * ((chosen - rejected) - (ref_chosen - ref_rejected))
+    return -F.logsigmoid(margins).mean(), margins
+
+
+def build_trainer_class():
+    """The subclass, built at call time so that the module imports without TRL."""
+    import torch
+    from trl import DPOTrainer
+    from trl.trainer.utils import use_adapter
+
+    class LoopDPOTrainer(DPOTrainer):
+        def _prepare_dataset(self, dataset, processing_class, args, dataset_name):
+            # Already tokenized through Gemma's template by `tokenize_pairs`.
+            return dataset
+
+        def _compute_loss(self, model, inputs, return_outputs):
+            mode = "train" if self.model.training else "eval"
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+            completion_mask = inputs["completion_mask"]
+            keep = positions_to_keep(completion_mask)
+            kwargs = {"input_ids": input_ids, "attention_mask": attention_mask, "use_cache": False, "logits_to_keep": keep}
+            outputs = model(**kwargs)
+            logps = sequence_logps(outputs.logits, input_ids, completion_mask, keep)
+            chosen, rejected = logps.chunk(2, dim=0)
+            if "ref_chosen_logps" in inputs:
+                ref_chosen, ref_rejected = inputs["ref_chosen_logps"], inputs["ref_rejected_logps"]
+            else:
+                with torch.no_grad():
+                    unwrapped = self.accelerator.unwrap_model(self.model)
+                    with use_adapter(unwrapped, None):
+                        ref_logits = model(**kwargs).logits
+                    ref_logps = sequence_logps(ref_logits, input_ids, completion_mask, keep)
+                ref_chosen, ref_rejected = ref_logps.chunk(2, dim=0)
+            loss, margins = dpo_loss(chosen, rejected, ref_chosen, ref_rejected, self.beta)
+            metrics = self._metrics[mode]
+            gathered = self.accelerator.gather(margins.detach())
+            metrics["rewards/margins"].append(gathered.mean().item())
+            metrics["rewards/accuracies"].append((gathered > 0).float().mean().item())
+            metrics["logps/chosen"].append(self.accelerator.gather(chosen.detach()).mean().item())
+            metrics["logps/rejected"].append(self.accelerator.gather(rejected.detach()).mean().item())
+            metrics["logits/positions_kept"].append(float(keep.numel()))
+            return (loss, outputs) if return_outputs else loss
+
+    return LoopDPOTrainer
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -52,14 +132,16 @@ def main(argv: list[str] | None = None) -> None:
     from datasets import load_from_disk
     from peft import LoraConfig
     from transformers import AutoModelForImageTextToText, AutoTokenizer
-    from trl import DPOConfig, DPOTrainer
+    from trl import DPOConfig
 
     started = time.time()
     rank = int(os.environ.get("RANK", "0"))
     world = int(os.environ.get("WORLD_SIZE", "1"))
     dataset = load_from_disk(args.data)
-    keep = ("prompt_input_ids", "chosen_input_ids", "rejected_input_ids")
-    dataset = dataset.remove_columns([c for c in dataset.column_names if c not in keep])
+    names = {"prompt_input_ids": "prompt_ids", "chosen_input_ids": "chosen_ids", "rejected_input_ids": "rejected_ids"}
+    dataset = dataset.remove_columns([c for c in dataset.column_names if c not in names])
+    for old, new in names.items():
+        dataset = dataset.rename_column(old, new)
     tokenizer = AutoTokenizer.from_pretrained(args.base)
     model = AutoModelForImageTextToText.from_pretrained(args.base, dtype=torch.bfloat16, attn_implementation="sdpa")
 
@@ -79,11 +161,6 @@ def main(argv: list[str] | None = None) -> None:
         warmup_ratio=0.1,
         beta=args.beta,
         max_length=args.max_length,
-        max_prompt_length=None,
-        truncation_mode="keep_end",
-        # Logits only for the completion tokens: Gemma's vocabulary is 262k
-        # and full logits over an 8k prompt would not fit beside the shards.
-        use_logits_to_keep=True,
         precompute_ref_log_probs=False,
         bf16=True,
         logging_steps=1,
@@ -101,7 +178,7 @@ def main(argv: list[str] | None = None) -> None:
         fsdp_config={"use_orig_params": True, "activation_checkpointing": True, "cpu_ram_efficient_loading": False},
         ddp_find_unused_parameters=False,
     )
-    trainer = DPOTrainer(
+    trainer = build_trainer_class()(
         model=model,
         ref_model=None,
         args=config,
