@@ -6,7 +6,8 @@ where GLM 5.3 Flash is the teacher, measured before and after on the same
 scenario suite with blind LLM judges. An experiment for experience and
 portfolio: the harness keeps its hosted model, the result is a table.
 
-`ROADMAP.md` is the plan; `reports/` the evidence.
+`CASE_STUDY.md` is the whole story in one read; `ROADMAP.md` the plan;
+`reports/` the evidence.
 
 ## Result of v1 (2026-09-11 → 12)
 
