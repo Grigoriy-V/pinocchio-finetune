@@ -20,6 +20,9 @@ weights — not on a 24 GB card. Gemma's forward takes `logits_to_keep`, a
 tensor of positions, so `LoopDPOTrainer` asks for the few dozen positions
 that predict a completion token and computes the sigmoid DPO loss on
 those; the reference pass is the same forward with the adapter disabled.
+The two rows of a pair go through the backward one at a time, each with
+the loss's own derivative as its weight, so that only one row's
+activations are alive: both at once did not fit either.
 """
 
 from __future__ import annotations
@@ -70,6 +73,30 @@ def dpo_loss(chosen, rejected, ref_chosen, ref_rejected, beta: float):
     return -F.logsigmoid(margins).mean(), margins
 
 
+def row_logp(model, inputs, row, keep_fn=positions_to_keep):
+    """The completion log-probability of one row of the padded batch, on
+    the row's own length, logits at the completion positions only."""
+    length = int(inputs["attention_mask"][row].sum())
+    ids = inputs["input_ids"][row : row + 1, :length]
+    mask = inputs["completion_mask"][row : row + 1, :length]
+    keep = keep_fn(mask)
+    logits = model(input_ids=ids, attention_mask=inputs["attention_mask"][row : row + 1, :length],
+                   use_cache=False, logits_to_keep=keep).logits
+    return sequence_logps(logits, ids, mask, keep)[0], keep.numel()
+
+
+def dpo_weights(chosen, rejected, ref_chosen, ref_rejected, beta: float):
+    """The loss and the derivative of the sigmoid DPO loss with respect to
+    the chosen and the rejected log-probability, so that each row can be
+    backpropagated on its own: dL/dlogp_chosen = -beta * sigmoid(-margin),
+    dL/dlogp_rejected = +beta * sigmoid(-margin)."""
+    import torch
+
+    loss, margin = dpo_loss(chosen, rejected, ref_chosen, ref_rejected, beta)
+    weight = beta * torch.sigmoid(-margin)
+    return loss, margin, weight
+
+
 def build_trainer_class():
     """The subclass, built at call time so that the module imports without TRL."""
     import torch
@@ -81,36 +108,43 @@ def build_trainer_class():
             # Already tokenized through Gemma's template by `tokenize_pairs`.
             return dataset
 
-        def _compute_loss(self, model, inputs, return_outputs):
-            mode = "train" if self.model.training else "eval"
-            input_ids = inputs["input_ids"]
-            attention_mask = inputs["attention_mask"]
-            completion_mask = inputs["completion_mask"]
-            keep = positions_to_keep(completion_mask)
-            kwargs = {"input_ids": input_ids, "attention_mask": attention_mask, "use_cache": False, "logits_to_keep": keep}
-            # The reference pass first, without gradients, so that its
-            # memory is back before the policy's activations are saved for
-            # the backward: with the policy first, the third smoke ran out
-            # of a 24 GB A10 in this very pass (20 GB held, 2026-09-12).
+        def training_step(self, model, inputs, num_items_in_batch=None):
+            """One pair per process, four forwards and two backwards.
+
+            The batch is [chosen, rejected]. Both rows through the reference
+            (adapter off) and the policy without gradients give the margin
+            and, from it, the loss's derivative with respect to each row's
+            log-probability; then each row alone goes forward with gradients
+            and backward with that derivative as its weight. The gradients
+            are those of the DPO loss, and only one row's activations exist
+            at a time: with both rows in one graph the fourth smoke ran out
+            of a 24 GB A10 in the backward (2026-09-12).
+            """
+            model.train()
+            inputs = self._prepare_inputs(inputs)
+            rows = inputs["input_ids"].shape[0]
+            assert rows == 2, f"one pair per process, got {rows} rows"
             with torch.no_grad():
                 unwrapped = self.accelerator.unwrap_model(self.model)
                 with use_adapter(unwrapped, None):
-                    ref_logits = model(**kwargs).logits
-                ref_logps = sequence_logps(ref_logits, input_ids, completion_mask, keep)
-                del ref_logits
-            ref_chosen, ref_rejected = ref_logps.chunk(2, dim=0)
-            outputs = model(**kwargs)
-            logps = sequence_logps(outputs.logits, input_ids, completion_mask, keep)
-            chosen, rejected = logps.chunk(2, dim=0)
-            loss, margins = dpo_loss(chosen, rejected, ref_chosen, ref_rejected, self.beta)
-            metrics = self._metrics[mode]
-            gathered = self.accelerator.gather(margins.detach())
+                    ref = [row_logp(model, inputs, i)[0] for i in range(2)]
+                policy = [row_logp(model, inputs, i) for i in range(2)]
+            (chosen, kept_c), (rejected, kept_r) = policy
+            loss, margin, weight = dpo_weights(chosen, rejected, ref[0], ref[1], self.beta)
+            scale = 1.0
+            if (not self.model_accepts_loss_kwargs or num_items_in_batch is None) and self.compute_loss_func is None:
+                scale = 1.0 / getattr(self, "current_gradient_accumulation_steps", self.args.gradient_accumulation_steps)
+            for row, sign in ((0, -1.0), (1, 1.0)):
+                logp, _ = row_logp(model, inputs, row)
+                self.accelerator.backward(sign * weight * scale * logp)
+            metrics = self._metrics["train"]
+            gathered = self.accelerator.gather(margin.detach().reshape(1))
             metrics["rewards/margins"].append(gathered.mean().item())
             metrics["rewards/accuracies"].append((gathered > 0).float().mean().item())
-            metrics["logps/chosen"].append(self.accelerator.gather(chosen.detach()).mean().item())
-            metrics["logps/rejected"].append(self.accelerator.gather(rejected.detach()).mean().item())
-            metrics["logits/positions_kept"].append(float(keep.numel()))
-            return (loss, outputs) if return_outputs else loss
+            metrics["logps/chosen"].append(self.accelerator.gather(chosen.reshape(1)).mean().item())
+            metrics["logps/rejected"].append(self.accelerator.gather(rejected.reshape(1)).mean().item())
+            metrics["logits/positions_kept"].append(float(kept_c + kept_r))
+            return (loss * scale).detach()
 
     return LoopDPOTrainer
 
