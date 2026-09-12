@@ -50,7 +50,8 @@ order. Each starts on his word; every Modal run is a gate.
    tokens per second and dollars per run beside the v1 A100 numbers; a
    4×A10 point is an optional later run. Debugging is one smoke of a few
    steps (minutes, ~$0.2), fixed from the log, never a second run without
-   his word. Gates in order: smoke on 2×A10, the full run (~2 h, ~$4.5),
+   his word. Checkpoints every 20% of the steps, to the Volume, so a
+   dead run resumes from the last one. Gates in order: smoke on 2×A10, the full run (~2 h, ~$4.5),
    the measurement through the harness (~$2). QLoRA would fit one A10;
    the report says so. Sketch in `reports/2026-09-12_after_measurement.md`.
 2. **v2 recipe when training again:** one sample per run (`--per-run`,
