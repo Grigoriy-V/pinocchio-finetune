@@ -127,10 +127,11 @@ def tokenize_pairs(set: str = "pairs-v1") -> dict:
     volumes={VOL: volume},
     secrets=[hf_secret],
     gpu=GPU,
-    # Two cores, as v1 measured; 32 GiB because two torchrun processes each
-    # read the full bf16 weights before FSDP shards them (the human, 2026-09-12).
+    # Two cores and 16 GiB, as v1 measured (the human, 2026-09-12). Modal's
+    # memory is a reservation, not a cap: the two torchrun processes reading
+    # the weights before FSDP shards them may use more for a moment.
     cpu=2,
-    memory=32768,
+    memory=16384,
     timeout=4 * 60 * MINUTES,
 )
 def train(set: str = "pairs-v1", run: str = "dpo-v1", max_steps: int = -1, epochs: float = 3.0,
