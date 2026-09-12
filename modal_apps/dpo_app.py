@@ -127,7 +127,9 @@ def tokenize_pairs(set: str = "pairs-v1") -> dict:
     volumes={VOL: volume},
     secrets=[hf_secret],
     gpu=GPU,
-    cpu=4,
+    # Two cores, as v1 measured; 32 GiB because two torchrun processes each
+    # read the full bf16 weights before FSDP shards them (the human, 2026-09-12).
+    cpu=2,
     memory=32768,
     timeout=4 * 60 * MINUTES,
 )
