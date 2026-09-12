@@ -204,7 +204,12 @@ def main(argv: list[str] | None = None) -> None:
         beta=args.beta,
         max_length=args.max_length,
         precompute_ref_log_probs=False,
-        bf16=True,
+        # No mixed precision: the model and the adapter are bf16 already.
+        # With `bf16=True` accelerate upcasts every trainable parameter to
+        # fp32 before FSDP wraps it ("FSDP upcast of low precision parameters
+        # to fp32"), and the sixth smoke died assigning a bf16 gradient to
+        # that fp32 leaf even with the adapter created in bf16 (2026-09-12).
+        bf16=False,
         # TRL turns the model's own gradient checkpointing on by default;
         # under FSDP the checkpointing is FSDP's (`activation_checkpointing`
         # below) and transformers refuses both at once.
