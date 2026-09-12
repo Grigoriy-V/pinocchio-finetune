@@ -35,14 +35,24 @@ approved work only, state and order, evidence in `reports/`.
 Recorded 2026-09-12 on the human's word as the next experiments, in this
 order. Each starts on his word; every Modal run is a gate.
 
-1. **The loop, taught by preference.** Pairs on the state where a Gemma
-   run repeated an already-seen call: `rejected` = the repeat, `chosen` =
-   GLM's move in the same state (or its answer). DPO or KTO on the same
-   LoRA shape, TRL, A100-40, reference model in NF4 beside the policy.
-   Only where nothing changed between the repeats. Measured the same way,
-   `base` beside it. Needs first: a pair extractor over the export (the
-   Gemma loops of V1, V6, X2, D4, D5 and GLM's runs of the same cases).
-   Sketch in `reports/2026-09-12_after_measurement.md`.
+1. **The loop, taught by preference, sharded over two A10s.** Pairs on
+   the state where a Gemma run repeated an already-seen call: `rejected`
+   = the repeat, `chosen` = GLM's move in the same state (or its answer).
+   DPO or KTO on the same LoRA shape, TRL; the policy in bf16 (no
+   quantisation) sharded by FSDP over `gpu="A10:2"` through `accelerate`,
+   the reference model in NF4 beside it. Only where nothing changed
+   between the repeats. Measured the same way, `base` beside it. Needs
+   first: a pair extractor over the export (the Gemma loops of V1, V6,
+   X2, D4, D5 and GLM's runs of the same cases), no GPU.
+   Approved 2026-09-12 (the human): two A10s, not four, and not an A100 —
+   a 12B in bf16 does not fit one 24 GB card, so the sharding is a real
+   need and the case for the portfolio is that need, with the step time,
+   tokens per second and dollars per run beside the v1 A100 numbers; a
+   4×A10 point is an optional later run. Debugging is one smoke of a few
+   steps (minutes, ~$0.2), fixed from the log, never a second run without
+   his word. Gates in order: smoke on 2×A10, the full run (~2 h, ~$4.5),
+   the measurement through the harness (~$2). QLoRA would fit one A10;
+   the report says so. Sketch in `reports/2026-09-12_after_measurement.md`.
 2. **v2 recipe when training again:** one sample per run (`--per-run`,
    set v2), bf16 base (`--quant none`), checkpoints every 10 steps, 2 cores
    / 16 GiB — 58 steps, ~52 min, ~$2.3 on an A100-40.
