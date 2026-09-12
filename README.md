@@ -168,6 +168,9 @@ the reference the same model with the adapter disabled (no second copy),
 `use_logits_to_keep` so the 262k-vocabulary logits exist only for the
 completion tokens, beta 0.1, lr 5e-5, three epochs, batch 1 × 2 GPUs ×
 accumulation 2 → 12 steps on 16 pairs, a checkpoint every 20 % of them.
+Pure bf16, no mixed precision (accelerate would upcast the adapter to
+fp32 under FSDP). The smoke took seven starts, each on one thing
+(`reports/2026-09-12_dpo_smoke.md`); it ran at 18.8 GiB peak.
 `--max-steps 2` is the smoke; `TUNE_GPU=A10:4` the optional second
 point of the scaling table.
 
