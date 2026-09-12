@@ -155,6 +155,22 @@ Prices (Modal, 2026-09-11): L40S $1.95/h, A100-40 $2.10/h, A100-80
 $2.50/h, H100 $3.95/h. Estimate for v1: 4.4M tokens × 2 epochs on an
 L40S at ~1.5–2.5k tokens/s is 1–1.5 h, $2–3, plus the smoke run.
 
+## DPO on the loop, two A10s (item 1)
+
+`modal_apps/dpo_app.py`: `tokenize_pairs` renders every judged pair
+through Gemma's template the way the SFT path did (the prompt as vLLM
+builds it, each completion ending in the model's own stop token) into
+`prompt_input_ids`, `chosen_input_ids`, `rejected_input_ids`; `train`
+runs `modal_apps/dpo_train.py` under torchrun, one process per GPU of an
+`A10:2` container. FSDP full-shards the bf16 base: 24 GB does not fit one
+A10, half of it does. The policy is base + a fresh LoRA of the v1 shape,
+the reference the same model with the adapter disabled (no second copy),
+`use_logits_to_keep` so the 262k-vocabulary logits exist only for the
+completion tokens, beta 0.1, lr 5e-5, three epochs, batch 1 × 2 GPUs ×
+accumulation 2 → 12 steps on 16 pairs, a checkpoint every 20 % of them.
+`--max-steps 2` is the smoke; `TUNE_GPU=A10:4` the optional second
+point of the scaling table.
+
 ## Measuring
 
 The harness measures: `loop_live --deployed --model tuned` on the held-out
