@@ -54,7 +54,11 @@ VLLM_PORT = 8000
 MINUTES = 60
 MAX_MODEL_LEN = 32768
 GPU = "L40S"
-SCALEDOWN_WINDOW = 5 * MINUTES
+# 60 s, not the 2 s minimum: inside one turn the harness runs tools between
+# two model requests — a venv and a pip install take 20–30 s — and a window
+# shorter than that would stop the container mid-turn and pay a cold start
+# for the next request. Idle after a run costs cents (the human, 2026-09-12).
+SCALEDOWN_WINDOW = 60
 MM_LIMITS = {"image": 4, "audio": 1}
 
 app = modal.App(APP_NAME)
@@ -136,6 +140,10 @@ class Server:
             "gemma4",
             "--reasoning-parser",
             "gemma4",
+            # No CUDA-graph capture: a minute or two less at every cold start,
+            # slower tokens. This endpoint is measured for what it answers,
+            # not how fast, and it boots for every measuring run.
+            "--enforce-eager",
             "--host",
             "0.0.0.0",
             "--port",
