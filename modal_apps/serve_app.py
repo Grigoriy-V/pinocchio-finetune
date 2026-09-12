@@ -16,18 +16,37 @@ limits); the pinned vLLM/transformers pair is the same. No memory snapshot
 in this first version: the endpoint exists to be measured for an hour, not
 to answer a person at any moment.
 
-    modal deploy modal_apps/serve_app.py      # a gate: the GPU starts on the first request
+    modal deploy modal_apps/serve_app.py                    # the tuned model
+    SERVE_TARGET=base modal deploy modal_apps/serve_app.py  # the untuned base, `[model.sets.base]`
+
+Both are gates: the GPU starts on the first request.
 """
 
 from __future__ import annotations
 
 import modal
 
-APP_NAME = "pinocchio-tune-serve"
-RUN = "v1-r16"
-SERVED_NAME = "gemma-4-12b-tuned"
+import os
+
 VOLUME = "pinocchio-tune"
 VOL = "/vol"
+RUN = "v1-r16"
+BASE_SNAPSHOT = f"{VOL}/hf/hub/models--google--gemma-4-12B-it/snapshots/707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7"
+
+# `SERVE_TARGET=base` deploys a second App that serves the untuned bf16 base
+# from the same Volume, on the same card and vLLM: the "before" side of the
+# measurement, so that the only difference between the two endpoints is
+# the weights (the harness's own Gemma endpoint is a QAT int4 checkpoint on
+# another workspace). Read at deploy time, on the client.
+TARGET = os.environ.get("SERVE_TARGET", "tuned")
+if TARGET == "base":
+    APP_NAME = "pinocchio-tune-serve-base"
+    MODEL_PATH = BASE_SNAPSHOT
+    SERVED_NAME = "gemma-4-12b-base"
+else:
+    APP_NAME = "pinocchio-tune-serve"
+    MODEL_PATH = f"{VOL}/runs/{RUN}/merged"
+    SERVED_NAME = "gemma-4-12b-tuned"
 
 VLLM_VERSION = "0.26.0"
 TRANSFORMERS_VERSION = "5.14.1"
@@ -102,7 +121,7 @@ class Server:
         command = [
             "vllm",
             "serve",
-            f"{VOL}/runs/{RUN}/merged",
+            MODEL_PATH,
             "--served-model-name",
             SERVED_NAME,
             "--max-model-len",
