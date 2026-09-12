@@ -151,6 +151,9 @@ def train(set: str = "pairs-v1", run: str = "dpo-v1", max_steps: int = -1, epoch
         "--accumulation", str(accumulation), "--max-length", str(MAX_TOKENS), "--lora", json.dumps(LORA),
     ]
     print(f"{gpus} x {torch.cuda.get_device_name(0)}: {' '.join(command[3:])}", flush=True)
-    subprocess.run(command, check=True)
+    # Growable segments: the third smoke had 2.7 GB reserved and unusable
+    # beside 20 GB allocated on a 23.5 GB card.
+    env = {**os.environ, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+    subprocess.run(command, check=True, env=env)
     volume.commit()
     return f"{out}/train.json"

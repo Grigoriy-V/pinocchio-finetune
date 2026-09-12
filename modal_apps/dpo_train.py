@@ -88,18 +88,20 @@ def build_trainer_class():
             completion_mask = inputs["completion_mask"]
             keep = positions_to_keep(completion_mask)
             kwargs = {"input_ids": input_ids, "attention_mask": attention_mask, "use_cache": False, "logits_to_keep": keep}
+            # The reference pass first, without gradients, so that its
+            # memory is back before the policy's activations are saved for
+            # the backward: with the policy first, the third smoke ran out
+            # of a 24 GB A10 in this very pass (20 GB held, 2026-09-12).
+            with torch.no_grad():
+                unwrapped = self.accelerator.unwrap_model(self.model)
+                with use_adapter(unwrapped, None):
+                    ref_logits = model(**kwargs).logits
+                ref_logps = sequence_logps(ref_logits, input_ids, completion_mask, keep)
+                del ref_logits
+            ref_chosen, ref_rejected = ref_logps.chunk(2, dim=0)
             outputs = model(**kwargs)
             logps = sequence_logps(outputs.logits, input_ids, completion_mask, keep)
             chosen, rejected = logps.chunk(2, dim=0)
-            if "ref_chosen_logps" in inputs:
-                ref_chosen, ref_rejected = inputs["ref_chosen_logps"], inputs["ref_rejected_logps"]
-            else:
-                with torch.no_grad():
-                    unwrapped = self.accelerator.unwrap_model(self.model)
-                    with use_adapter(unwrapped, None):
-                        ref_logits = model(**kwargs).logits
-                    ref_logps = sequence_logps(ref_logits, input_ids, completion_mask, keep)
-                ref_chosen, ref_rejected = ref_logps.chunk(2, dim=0)
             loss, margins = dpo_loss(chosen, rejected, ref_chosen, ref_rejected, self.beta)
             metrics = self._metrics[mode]
             gathered = self.accelerator.gather(margins.detach())
