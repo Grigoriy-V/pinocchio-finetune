@@ -114,6 +114,22 @@ v1 set (export of 2026-09-11): 260 runs, 814 samples, 4.37M teacher tokens
 per epoch (only 33k of them completion tokens: an agent's turns are short
 tool calls), mean 5.4k tokens per sample, longest ~8k.
 
+**Loop pairs** (`tune/pairs.py`, for DPO/KTO): every student run (a Gemma,
+tuned or not) is read call by call; where it re-issued a call it had
+already made in the turn and nothing had changed — the harness's repeat
+guard refused it, or it ran again and returned the same text — the state
+it saw is the prompt and the repeat is `rejected`. At most ten pairs a
+run. `tune/teach.py` then asks the teacher the same prompt with the same
+tools (paid, a gate; asked once, cached in `taught.jsonl`) and its move is
+`chosen`; a pair where the teacher repeats too, or says nothing, is
+dropped. Output `dpo.jsonl` in TRL's conversational preference shape.
+
+Pair set v1 (exports of 2026-09-11/12, 55 student runs): 127 repeats seen,
+45 dropped because the result had changed (a re-run after an edit is not a
+loop), 34 pairs from 7 runs — V1 16, V6 10, X2 5, D1 D2 N1 one each; 7 by
+the guard's refusal, 27 by an identical result. ~130k prompt tokens to
+teach.
+
 ## Training
 
 `modal_apps/train_app.py`. Base `google/gemma-4-12B-it` in bf16, loaded
