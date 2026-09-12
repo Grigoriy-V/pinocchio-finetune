@@ -76,10 +76,37 @@ None: no model was called and no worker started. The next step, teaching
 the 34 pairs, is ~130k input tokens of GLM 5.3 Flash — cents — and is a
 gate; it needs `OPENROUTER_API_KEY` in this repository's own `.env`.
 
+## The teacher's moves (2026-09-12, later)
+
+`tune.teach` on the 34 pairs: 34 asked, **23 kept**, 11 dropped because
+the teacher made the same call the student had (GLM repeats in a third of
+these states too: the state is confusing to everyone, not only to Gemma).
+242k input tokens (the estimate of 130k was half: tool schemas and the
+system prompt are not in the pair's messages), 1.7k output; cents.
+
+Read one by one, the 23 kept are of three kinds:
+
+- **a way out** — an answer in text ("I ran it and checked: `out/app.bin`
+  does not exist"), or the one read of `build.sh` that the case wants:
+  V1 tuned 8, 9, 11; V6 tuned 8; D1 base 8; V1 int4 7, 13. About seven.
+- **a different probe of the same thing** — `find … | wc -l` where the
+  student had `find …`, `cat clean.sh` a third time under another
+  spelling, `bash build.sh && find` after `bash build.sh && ls`. Different
+  by the letter, no better in substance. Most of the rest.
+- **the case's right move under another cwd** — X2's `python3 -m unittest
+  calc_pkg.test…` for the student's `cd calc_pkg && …`: plausibly better,
+  not obviously.
+
+So the mechanical filter (a different call) keeps pairs whose `chosen`
+is not a lesson. The blind judge the human asked about is the tool for
+exactly this: two moves on one state, anonymised, three Sonnet judges
+asked whether the state is a dead end and which move leaves it. A pair
+the judges do not prefer `chosen` on is dropped. Proposed as the step
+between `teach` and training; a draft until approved.
+
 ## Next, in order (each on the human's word)
 
-1. `tune.teach --pairs data/pairs/v1/pairs.jsonl --out data/pairs/v1` —
-   the teacher's `chosen`; then the count of pairs kept.
+1. Blind judges over the 23 pairs (proposed above).
 2. The DPO training app on `gpu="A10:2"` with FSDP, checkpoints every 20%
    of the steps; one smoke of a few steps.
 3. The full run, the measurement through the harness, `base` beside it.
