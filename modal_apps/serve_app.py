@@ -18,6 +18,7 @@ to answer a person at any moment.
 
     modal deploy modal_apps/serve_app.py                    # the tuned model
     SERVE_TARGET=base modal deploy modal_apps/serve_app.py  # the untuned base, `[model.sets.base]`
+    SERVE_TARGET=dpo modal deploy modal_apps/serve_app.py   # the DPO run merged, `[model.sets.dpo]`
 
 Both are gates: the GPU starts on the first request.
 """
@@ -39,10 +40,16 @@ BASE_SNAPSHOT = f"{VOL}/hf/hub/models--google--gemma-4-12B-it/snapshots/707f0a3b
 # the weights (the harness's own Gemma endpoint is a QAT int4 checkpoint on
 # another workspace). Read at deploy time, on the client.
 TARGET = os.environ.get("SERVE_TARGET", "tuned")
+DPO_RUN = "dpo-v1"
 if TARGET == "base":
     APP_NAME = "pinocchio-tune-serve-base"
     MODEL_PATH = BASE_SNAPSHOT
     SERVED_NAME = "gemma-4-12b-base"
+elif TARGET == "dpo":
+    # The DPO adapter merged (item 1, 2026-09-12): a third App, `[model.sets.dpo]`.
+    APP_NAME = "pinocchio-tune-serve-dpo"
+    MODEL_PATH = f"{VOL}/runs/{DPO_RUN}/merged"
+    SERVED_NAME = "gemma-4-12b-dpo"
 else:
     APP_NAME = "pinocchio-tune-serve"
     MODEL_PATH = f"{VOL}/runs/{RUN}/merged"
