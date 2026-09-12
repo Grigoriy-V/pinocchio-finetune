@@ -492,16 +492,25 @@ def merge(run: str = "v1-r16") -> str:
     The adapter was trained over an NF4 base and is applied here to the bf16
     one: the usual QLoRA practice, and what the serving stack can load.
     """
+    import shutil
+
     import torch
+    from huggingface_hub import snapshot_download
     from peft import PeftModel
-    from transformers import AutoModelForImageTextToText, AutoProcessor
+    from transformers import AutoModelForImageTextToText
 
     out = _run_dir(run)
     model = AutoModelForImageTextToText.from_pretrained(BASE_REPO, dtype=torch.bfloat16, device_map={"": "cpu"})
     model = PeftModel.from_pretrained(model, f"{out}/adapter")
     model = model.merge_and_unload()
     model.save_pretrained(f"{out}/merged", safe_serialization=True, max_shard_size="5GB")
-    AutoProcessor.from_pretrained(BASE_REPO).save_pretrained(f"{out}/merged")
+    # The tokenizer and processor files, copied from the base's snapshot
+    # rather than loaded and re-saved: `AutoProcessor` needs Pillow, which
+    # the image does not carry (the first merge fell on it after the weights
+    # were written, 2026-09-12).
+    base = snapshot_download(BASE_REPO)
+    for name in ("tokenizer_config.json", "tokenizer.json", "chat_template.jinja", "processor_config.json"):
+        shutil.copyfile(f"{base}/{name}", f"{out}/merged/{name}")
     volume.commit()
     print(f"merged weights at {out}/merged", flush=True)
     return f"{out}/merged"
