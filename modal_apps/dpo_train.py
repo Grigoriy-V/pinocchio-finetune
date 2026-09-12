@@ -161,6 +161,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--accumulation", type=int, default=2)
     parser.add_argument("--max-length", type=int, default=12288)
     parser.add_argument("--lora", required=True, help="JSON of the LoRA config")
+    parser.add_argument("--resume", action="store_true", help="continue from the last checkpoint in the run directory")
     args = parser.parse_args(argv)
 
     import torch
@@ -239,7 +240,14 @@ def main(argv: list[str] | None = None) -> None:
     trainable = sum(p.numel() for p in trainer.model.parameters() if p.requires_grad)
     if rank == 0:
         print(f"trainable parameters: {trainable:,}", flush=True)
-    result = trainer.train()
+    checkpoint = None
+    if args.resume:
+        from transformers.trainer_utils import get_last_checkpoint
+
+        checkpoint = get_last_checkpoint(f"{args.out}/trainer")
+        if rank == 0:
+            print(f"resuming from {checkpoint}", flush=True)
+    result = trainer.train(resume_from_checkpoint=checkpoint)
     trainer.save_model(f"{args.out}/adapter")
     if rank == 0:
         tokenizer.save_pretrained(f"{args.out}/adapter")
@@ -250,6 +258,7 @@ def main(argv: list[str] | None = None) -> None:
             "steps": result.global_step,
             "planned_steps": total,
             "checkpoint_every": every,
+            "resumed_from": checkpoint,
             "train_loss": result.training_loss,
             "epochs": args.epochs,
             "lr": args.lr,

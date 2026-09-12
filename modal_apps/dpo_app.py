@@ -5,7 +5,8 @@ Every function is a priced worker and starts only on the human's word:
     modal volume put pinocchio-tune data/pairs/v1/dpo_judged.jsonl /data/pairs-v1/dpo.jsonl
     modal run modal_apps/dpo_app.py::tokenize_pairs --set pairs-v1          # CPU, minutes
     modal run modal_apps/dpo_app.py::train --set pairs-v1 --run dpo-v1 --max-steps 2   # the smoke
-    modal run modal_apps/dpo_app.py::train --set pairs-v1 --run dpo-v1      # the run
+    modal run --detach modal_apps/dpo_app.py::train --set pairs-v1 --run dpo-v1   # the run
+    modal run --detach modal_apps/dpo_app.py::train --set pairs-v1 --run dpo-v1 --resume   # after a break
     modal run modal_apps/train_app.py::merge --run dpo-v1                   # CPU, as before
 
 State on the Volume `pinocchio-tune`, beside the SFT runs:
@@ -135,8 +136,11 @@ def tokenize_pairs(set: str = "pairs-v1") -> dict:
     timeout=4 * 60 * MINUTES,
 )
 def train(set: str = "pairs-v1", run: str = "dpo-v1", max_steps: int = -1, epochs: float = 3.0,
-          lr: float = 5e-5, beta: float = 0.1, accumulation: int = 2) -> str:
-    """torchrun over every GPU of the container; `--max-steps 2` is the smoke."""
+          lr: float = 5e-5, beta: float = 0.1, accumulation: int = 2, resume: bool = False) -> str:
+    """torchrun over every GPU of the container; `--max-steps 2` is the smoke;
+    `--resume` continues from the run's last checkpoint (adapter, optimizer,
+    scheduler, data order). Start it with `modal run --detach`: the first
+    full run was cancelled when the local client went away (2026-09-12)."""
     import json
     import subprocess
     import sys
@@ -152,7 +156,7 @@ def train(set: str = "pairs-v1", run: str = "dpo-v1", max_steps: int = -1, epoch
         "--base", BASE_REPO, "--data", f"{_data_dir(set)}/tokenized", "--out", out,
         "--epochs", str(epochs), "--max-steps", str(max_steps), "--lr", str(lr), "--beta", str(beta),
         "--accumulation", str(accumulation), "--max-length", str(MAX_TOKENS), "--lora", json.dumps(LORA),
-    ]
+    ] + (["--resume"] if resume else [])
     print(f"{gpus} x {torch.cuda.get_device_name(0)}: {' '.join(command[3:])}", flush=True)
     # Growable segments: the third smoke had 2.7 GB reserved and unusable
     # beside 20 GB allocated on a 23.5 GB card.
