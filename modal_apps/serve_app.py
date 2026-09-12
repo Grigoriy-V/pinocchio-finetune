@@ -74,6 +74,10 @@ image = (
     )
     .env(
         {
+            # Baked into the image: the container has no SERVE_TARGET of its
+            # own, and read at import there the base App served the tuned
+            # weights under the tuned name (404 on the base name, 2026-09-12).
+            "SERVE_TARGET": TARGET,
             "VLLM_USE_V2_MODEL_RUNNER": "0",
             "VLLM_USE_FLASHINFER_SAMPLER": "0",
             "TORCHINDUCTOR_COMPILE_THREADS": "1",
