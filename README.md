@@ -6,6 +6,11 @@ where GLM 5.3 Flash is the teacher, measured before and after on the same
 scenario suite with blind LLM judges. An experiment for experience and
 portfolio: the harness keeps its hosted model, the result is a table.
 
+`ROADMAP.md` is the plan; `reports/` the evidence. The v1 loop closed
+2026-09-12: the LoRA did not make the model more agentic (blind judges:
+untuned 9.25, tuned 8.67, GLM 9.81 of 10); the next experiments are in the
+roadmap.
+
 ## The loop
 
 ```
