@@ -1,9 +1,13 @@
 # Fine-tuning Gemma 4 12B on my own agent's trajectories — a case study
 
 *September 11–12, 2026. One person, one agent harness, one open model, two
-days, about $25 of GPU time. The question was whether imitation data from
-a stronger model makes a smaller open model better at agentic work. The
-answer was no, and the reasons why are the useful part.*
+days, about $30 of GPU time, two rounds. Round one asked whether imitation
+data from a stronger model makes a smaller open model better at agentic
+work: no, and the reasons why are the useful part (§1–10). Round two
+asked whether preference pairs on the failure itself do better, and did
+it as distributed training — a 12B model in bf16 sharded over two 24 GB
+A10s, because it does not fit one (§11–14). Also no, with a different
+lesson, and the sharded recipe is the part that stands.*
 
 ## 1. Setting
 
@@ -236,7 +240,148 @@ teacher's move in the same state — trained with DPO or KTO on the same
 LoRA shape. The raw material exists (every Gemma V1/V6/X2 loop, and the
 teacher's clean runs of the same deterministic scenarios); a pair
 extractor is the missing piece, with the care not to teach "never
-repeat" where a repeat after a change is right. Queued, not started.
+repeat" where a repeat after a change is right. That is round two.
+
+## 11. Round two: pairs on the loop itself
+
+The material was already in the exports: every turn where a Gemma had
+re-issued a call it had already made. The extractor (`tune/pairs.py`)
+takes a repeat only where *nothing had changed* — evidence, not a guess:
+either the harness's repeat guard refused the call, or the call ran
+again and returned the same text (the runner's timing stamp aside).
+`python3 stats/total.py` after the edit that fixes it is a normal
+re-run, not a loop, and 45 of 127 repeats were that. The state the model
+saw is the prompt; the repeat is `rejected`; at most ten pairs a run, or
+one 92-call cycle would have been the whole set. 34 pairs from 7 runs.
+
+`chosen` came from the teacher on the very same state, with the same
+tools, temperature 0 (`tune/teach.py`). Where GLM made the same call the
+student had — eleven of 34 — the pair was dropped: the state confuses
+everyone, and the pair would teach nothing. Then three blind Sonnet
+judges saw each remaining pair as two anonymous moves from one state and
+were asked two things: is this state a dead end, and which move leaves
+it. Seven pairs where the judges called both moves the same — `find …
+| wc -l` against `find …`, a third `cat` of the same script — were
+dropped; no judge preferred the student's move anywhere; sixteen pairs
+remained, thirteen after the 12k-token ceiling. Small, and honest about
+it: it is what the loop had left in the data.
+
+## 12. Distributed training on two A10s: what it took
+
+The choice was the human's, and deliberate: not an A100, not four cards,
+but two A10s at $1.10 an hour. A 12B model in bf16 is ~24 GB of weights;
+an A10 has 24 GB. On one card the bf16 policy does not fit at all, so
+sharding is a real need rather than an acceleration — that is the
+honest version of "distributed training" for a portfolio. FSDP full
+shard over `gpu="A10:2"` in one Modal container, torchrun with one
+process per card, a fresh LoRA of round one's shape as the policy and
+the same model with the adapter disabled as the reference, so no second
+copy of the weights is ever loaded.
+
+The smoke took seven starts, each two steps, each falling on one thing,
+each fixed from the log before the next (the human's rule: minutes of
+smoke, never a debugging budget the size of training):
+
+1. TRL's DPO trainer had been rewritten; two config fields no longer
+   existed. The trainer was then read in full rather than guessed at.
+2. TRL turns the model's own gradient checkpointing on by default;
+   under FSDP the checkpointing is FSDP's, and transformers refuses both.
+3. Out of memory in the reference pass, 20 GB held: the policy's
+   activations were still alive. The reference pass goes first now,
+   without gradients, and its memory is back before the policy runs.
+4. Out of memory in the backward, 21 GB: both rows of a pair in one
+   graph. Now the reference and the policy score both rows without
+   gradients, which gives the margin and the derivative of the sigmoid
+   DPO loss with respect to each row's log-probability (±β·σ(−margin));
+   then each row goes forward and backward alone with that derivative
+   as its weight. Same gradient, one row's activations at a time.
+5. A bf16 gradient into an fp32 leaf: PEFT upcasts LoRA weights to fp32
+   under a bf16 base. Created the adapter in the base's dtype, as TRL
+   itself does under ZeRO-3. Necessary, not sufficient.
+6. The same error: accelerate upcasts every trainable parameter to fp32
+   whenever FSDP runs with mixed precision, whatever dtype the adapter
+   was created in. Mixed precision off; the model and the adapter are
+   bf16 already, and AdamW on a 65M-parameter LoRA in bf16 is fine for
+   twelve steps.
+7. Ran: 18.8 GiB peak on a 24 GB card.
+
+The largest single memory item was never the weights. Gemma's
+vocabulary is 262k tokens; a 7k-token pair through the stock trainer
+means ~7 GB of logits per sequence in bf16, several times over. Gemma's
+forward takes `logits_to_keep`, a tensor of positions, and the loss only
+needs the few dozen positions that predict a completion token. That one
+argument is the difference between "does not fit on four A10s" and "fits
+on two".
+
+The full run went in two halves. The first was cancelled at step five by
+the operator's own tool: `modal run` held in a foreground command with a
+ten-minute ceiling, the client killed, and an ephemeral app stops with
+its client. Checkpoints every 20 % of the steps and `--resume` (adapter,
+optimizer, scheduler, data order) made the second half start from
+checkpoint 4 and reproduce step five to the digit: loss 0.4094, margin
+0.93. Twelve steps in all, 19.6 GiB peak, ~16 minutes of two A10s, about
+a dollar. Loss 0.69 → 0.20, margins 0.8–3.5 from the fourth step on: the
+adapter separates the training pairs.
+
+## 13. Result of round two
+
+Merged, served as a third endpoint beside the untuned base on the same
+card and stack, measured on the same 17 cases, the base measured again in
+the same deploy (the harness had changed under it), one blind batch of 43
+transcripts with GLM's held-out runs as the anchor.
+
+| model | checks | judges, mean of 10 | a | b | c | d | e |
+|---|---|---|---|---|---|---|---|
+| GLM 5.3 Flash (anchor) | 9/9 | **9.70** | 2.00 | 1.74 | 1.96 | 2.00 | 2.00 |
+| Gemma-IT bf16, untuned | 57/57 | **9.47** | 1.94 | 1.67 | 2.00 | 1.86 | 2.00 |
+| Gemma-IT bf16 + DPO | 55/57 | **9.37** | 1.84 | 1.71 | 1.98 | 1.88 | 1.96 |
+
+Judges within a point on 40 of 43. Where the two Gemmas differ by more
+than a point it is one case each way: D2 (DPO 9.7, base 8.0) and D4 (DPO
+4.0, base 7.7).
+
+**Plus.** The half of the lesson that took: after the guard, the DPO
+model answers in words — D4 ended with a right, grounded answer ("the
+script fails because of a trailing comma") where round one's Gemmas
+answered nothing. Three of the sixteen `chosen` completions were exactly
+that kind of answer. And V6, round one's 92-call cycle, was three calls
+for base and DPO alike.
+
+**Minus.** The other half did not take. D4 is the loop, on a prompt that
+was in the training pairs: the model read the files, saw the comma, and
+ran the same `python3 -c "json.loads('{…}')"` six times — it printed `3`
+every time — until the guard refused it. The `rejected` completions were
+exact repeats and this is an exact repeat, so the signal was the right
+one; sixteen pairs, three epochs, β 0.1 at rank 16 did not move it. On
+the whole set the DPO model is level with the base and a tenth below.
+
+**The measurement itself had to be done twice.** The two `scenarios`
+calls were started at once under the harness's default probe user, so
+both wrote into the same threads; the DPO run was a case ahead and in 12
+of 17 cases the base's first model call already carried the DPO's
+finished turn ("I have already completed this task for you", no tool
+call, eleven failed checks). The suite's `--parallel` exists for exactly
+this. The base was rerun alone and the batch judged again; the DPO and
+GLM scores of the first batch sit within a tenth of the second's.
+
+## 14. What round two leaves
+
+1. **A working recipe for a 12B in bf16 on two 24 GB cards**, with the
+   three ideas that made it fit: logits only where the loss needs them,
+   one row of a pair per backward with the loss's analytic weight, and
+   no mixed precision when everything is bf16 already. Exact resume from
+   a checkpoint. About two minutes per step of two pairs.
+2. **Sixteen pairs is a pilot, not a training set.** The extractor, the
+   teacher and the judges take any number of exports; the harness's
+   parallel generation is the way to fifty.
+3. **The loop is still the harness's to catch first.** D4's six
+   identical calls passed two guard-free repeats before the third was
+   refused; a guard that counts an identical *successful* call from the
+   second would have cut it to two, for every Gemma, tuned or not.
+4. **Two rules for the operator**, learned at ~$1 each: a local timer
+   must never hold a training or inference run (`--detach`, detached
+   processes, polling); and concurrent measuring runs need their own
+   probe users.
 
 ## Numbers
 
@@ -249,8 +394,12 @@ repeat" where a repeat after a change is right. Queued, not started.
 | smoke runs | 3 × 5 steps, ≈ $1 |
 | serving | bf16 on L40S, cold start 2–3 min, $1.95/h while measured |
 | measurement | 2 × 17 turns on Linux workers, ≈ $2; 3 blind judges, 52 transcripts |
-| total GPU and workers | ≈ $25 across two Modal workspaces |
-| lines of code here | converter + tests ~450, Modal apps ~550 |
+| total GPU and workers, round one | ≈ $25 across two Modal workspaces |
+| round two: loop pairs | 127 repeats → 34 pairs → 23 taught → 16 judged → 13 under the ceiling |
+| round two: training | 2 × A10, FSDP, 12 steps, 19.6 GiB peak, ~16 min, ≈ $1 (+ 7 smokes ≈ $1.5) |
+| round two: measurement | 2 × 17 turns (+ 17 redone), 43 transcripts, 3 blind judges, ≈ $3 |
+| round two, all in | ≈ $6 |
+| lines of code here | round one ~1,000; round two: pairs/teach/judge ~600, DPO apps ~450, tests ~250 |
 
 The harness side of the story — the trajectory capture, the seven
 families, the judge tooling, the two issues — is in the harness's

@@ -1,10 +1,14 @@
 # pinocchio-finetune
 
-A LoRA of **Gemma 4 12B** on trajectories from my own agent harness
+Fine-tuning **Gemma 4 12B** on trajectories from my own agent harness
 ([pinocchio-harness](https://github.com/Grigoriy-V/pinocchio-harness)),
 where GLM 5.3 Flash is the teacher, measured before and after on the same
-scenario suite with blind LLM judges. An experiment for experience and
-portfolio: the harness keeps its hosted model, the result is a table.
+scenario suite with blind LLM judges. Two rounds: a LoRA on the teacher's
+turns (SFT, one A100), then DPO on the loop itself — preference pairs on
+the exact states where Gemma repeated a call — **trained distributed, a
+12B in bf16 sharded by FSDP over two 24 GB A10s**, because it does not
+fit one. An experiment for experience and portfolio: the harness keeps
+its hosted model, the result is two tables and one recipe.
 
 `CASE_STUDY.md` is the whole story in one read; `ROADMAP.md` the plan;
 `reports/` the evidence.
@@ -69,6 +73,61 @@ correction it never sees.
 Reports: `reports/2026-09-12_after_measurement.md` (the measurement),
 `reports/2026-09-12_v1_run.md` (the run), `reports/2026-09-11_v1_plan.md`
 (the choices), `reports/2026-09-11_speed_research.md` (speed).
+
+## Result of round two: DPO on the loop, two A10s (2026-09-12)
+
+**Question.** Round one showed imitation cannot teach a correction the
+teacher never makes. Does preference data on the failure itself — the
+repeat, against the teacher's move from the very same state — do better?
+And can it be trained on the cheapest cards, sharded?
+
+**Data.** From the harness's exports, every state where a Gemma re-issued
+a call it had already made and nothing had changed (the guard refused it,
+or it returned the same text): 127 repeats, 34 pairs after the rule and a
+cap of ten a run, 23 after the teacher answered the same state (GLM
+repeated too in 11), **16 after three blind judges** agreed the state was
+a dead end and the teacher's move left it, 13 under the 12k-token
+ceiling. Small; it is what the loop had left in the data.
+
+**Training, distributed.** `gpu="A10:2"`, torchrun, FSDP full shard of
+the bf16 base (24 GB of weights, 12 per card), a fresh LoRA of round
+one's shape as the policy, the same model with the adapter off as the
+reference. What made it fit a 24 GB card: logits computed only at the
+positions the loss needs (`logits_to_keep`; Gemma's 262k vocabulary is
+~7 GB of logits per 7k-token sequence otherwise), the two rows of a pair
+backpropagated one at a time with the DPO loss's analytic derivative as
+each row's weight, and no mixed precision (accelerate upcasts the adapter
+to fp32 under it). Seven two-step smokes to get there, each on one thing,
+~$1.5. The run: 12 steps, loss 0.69 → 0.20, margins 0.8–3.5, **19.6 GiB
+peak**, ~16 min, ≈ $1; cancelled once at step five by my own tool's
+timer and resumed from a checkpoint to the digit.
+
+**Measurement.** Same as round one: merged, served beside the untuned
+base on the same L40S stack, D V X on Linux workers, the base measured
+again in the same deploy, three blind Sonnet judges, GLM as the anchor.
+
+| model | checks | judges /10 |
+|---|---|---|
+| GLM 5.3 Flash (anchor) | 9/9 | 9.70 |
+| Gemma-IT bf16, untuned | 57/57 | 9.47 |
+| **Gemma-IT bf16 + DPO** | 55/57 | **9.37** |
+
+**Plus.** After the guard the DPO model now answers in words where round
+one's Gemmas answered nothing; V6, the 92-call cycle of round one, was
+three calls. D2 up from 8.0 to 9.7.
+
+**Minus.** The loop itself is still there: D4 — a training prompt — ran
+the same `python3 -c` six times until the guard (4.0 against the base's
+7.7). Sixteen pairs, three epochs at rank 16 moved the answer, not the
+repeat. On the whole set: level with the base, a tenth below.
+
+**What stands.** The two-A10 recipe (bf16 12B, FSDP, exact resume, ~2
+min a step of two pairs) and the pair pipeline (extract → teach → judge),
+which take any number of exports. Next would be more pairs from more
+trajectories, or KTO on all 34 refused repeats; and, first, the
+harness's guard catching an identical successful call from the second
+time. `CASE_STUDY.md` §11–14; reports `2026-09-12_loop_pairs.md`,
+`2026-09-12_dpo_smoke.md`, `2026-09-12_dpo_measurement.md`.
 
 ## The loop
 
